@@ -24,7 +24,6 @@ Two conventions make the suite deterministic and strict:
     together form an exact, non-overlapping partition of the physical block pool.
     That one assertion catches leaks, double-frees, and aliasing simultaneously.
 """
-
 from __future__ import annotations
 
 import math
@@ -32,8 +31,8 @@ import random
 
 import pytest
 
-import mock_scheduler as ms
-from mock_scheduler import (
+import scheduling as ms
+from scheduling import (
     BlockManager,
     MockExecutor,
     Request,
@@ -45,20 +44,13 @@ from mock_scheduler import (
 )
 
 
-# ============================================================================
-# Helpers
-# ============================================================================
-
 def build(num_blocks=64, block_size=16, max_num_batched_tokens=4096, max_num_seqs=16):
-    """Construct a scheduler + its block manager. Returns (scheduler, block_manager)."""
     bm = BlockManager(num_blocks=num_blocks, block_size=block_size)
     sch = Scheduler(bm, MockExecutor(), max_num_batched_tokens, max_num_seqs)
     return sch, bm
 
 
 def add_requests(scheduler, specs):
-    """specs: iterable of (prompt_len, max_tokens, stop_prob). Returns the Requests,
-    which double as the full registry for invariant checks."""
     reqs = []
     for i, (plen, mtok, sprob) in enumerate(specs):
         r = Request(request_id=f"r{i}", prompt_len=plen, max_tokens=mtok, stop_prob=sprob)
@@ -68,8 +60,6 @@ def add_requests(scheduler, specs):
 
 
 def spy_schedule(scheduler):
-    """Wrap _schedule so we can inspect every SchedulerOutput it emits.
-    Returns a list that accumulates outputs as steps run."""
     outputs = []
     original = scheduler._schedule
 
@@ -82,12 +72,7 @@ def spy_schedule(scheduler):
     return outputs
 
 
-# --- invariant assertions --------------------------------------------------
-
 def assert_block_partition(bm, registry, num_blocks):
-    """Free list + all block tables must be an exact, disjoint partition of the pool.
-    Catches leaks (blocks vanish), double-free (block in free list twice or in
-    free + a table), and aliasing (one physical block in two tables)."""
     free = list(bm.free_blocks)
     assert len(free) == len(set(free)), f"duplicate block in free list: {free}"
 
@@ -107,8 +92,6 @@ def assert_block_partition(bm, registry, num_blocks):
 
 
 def assert_coverage(registry, block_size):
-    """Between ticks, each request's block table must exactly cover its computed
-    tokens, and non-running requests must hold nothing."""
     for r in registry:
         if r.status == SeqStatus.RUNNING:
             need = math.ceil(r.num_computed_tokens / block_size) if r.num_computed_tokens else 0
@@ -116,7 +99,7 @@ def assert_coverage(registry, block_size):
                 f"{r.request_id}: table has {len(r.block_ids)} blocks, "
                 f"needs exactly {need} for {r.num_computed_tokens} tokens"
             )
-        else:  # WAITING or FINISHED
+        else:
             assert r.block_ids == [], (
                 f"{r.request_id} is {r.status} but still holds blocks {r.block_ids}"
             )
@@ -128,7 +111,6 @@ def assert_coverage(registry, block_size):
 
 
 def assert_budget(outputs, max_tokens, max_seqs):
-    """No scheduled step may exceed the token or sequence budget."""
     for out in outputs:
         tok = sum(s.num_tokens for s in out.scheduled)
         assert tok <= max_tokens, f"step batched {tok} tokens > cap {max_tokens}"
@@ -139,8 +121,6 @@ def assert_budget(outputs, max_tokens, max_seqs):
 
 def run_to_completion(scheduler, bm, registry, num_blocks, block_size,
                       check=True, max_ticks=200_000):
-    """Drive the scheduler until it drains, checking invariants each tick.
-    Returns (finished_order, ticks, outputs). Fails loudly on livelock."""
     outputs = spy_schedule(scheduler)
     finished_order = []
     ticks = 0
@@ -159,10 +139,6 @@ def run_to_completion(scheduler, bm, registry, num_blocks, block_size,
     return finished_order, ticks, outputs
 
 
-# ============================================================================
-# Component unit tests
-# ============================================================================
-
 class TestBlockManager:
 
     def test_blocks_for_is_ceiling(self):
@@ -180,7 +156,7 @@ class TestBlockManager:
 
     def test_allocate_then_free_round_trips(self):
         bm = BlockManager(num_blocks=10, block_size=16)
-        r = Request("a", prompt_len=40, max_tokens=8)  # ceil(40/16) = 3 blocks
+        r = Request("a", prompt_len=40, max_tokens=8)
         assert bm.can_allocate(r)
         bm.allocate(r)
         assert len(r.block_ids) == 3
@@ -191,21 +167,20 @@ class TestBlockManager:
 
     def test_can_allocate_false_when_insufficient(self):
         bm = BlockManager(num_blocks=2, block_size=16)
-        r = Request("a", prompt_len=100, max_tokens=8)  # needs 7 blocks, only 2 exist
+        r = Request("a", prompt_len=100, max_tokens=8)
         assert not bm.can_allocate(r)
 
     def test_allocated_blocks_are_distinct(self):
         bm = BlockManager(num_blocks=10, block_size=16)
-        r = Request("a", prompt_len=48, max_tokens=8)  # 3 blocks
+        r = Request("a", prompt_len=48, max_tokens=8)
         bm.allocate(r)
         assert len(set(r.block_ids)) == len(r.block_ids)
 
     def test_append_slot_grabs_block_on_boundary(self):
-        # Prompt exactly fills one block; the next token must start a new block.
         bm = BlockManager(num_blocks=10, block_size=16)
         r = Request("a", prompt_len=16, max_tokens=8)
         bm.allocate(r)
-        r.num_computed_tokens = 16          # block 0 is full (indices 0..15)
+        r.num_computed_tokens = 16
         free_before = bm.num_free_blocks()
         assert bm.can_append_slot(r)
         bm.append_slot(r)
@@ -213,11 +188,10 @@ class TestBlockManager:
         assert len(r.block_ids) == 2
 
     def test_append_slot_noop_within_block(self):
-        # Prompt leaves room in the last block; the next token needs no new block.
         bm = BlockManager(num_blocks=10, block_size=16)
         r = Request("a", prompt_len=15, max_tokens=8)
         bm.allocate(r)
-        r.num_computed_tokens = 15          # block 0 has one slot left
+        r.num_computed_tokens = 15
         free_before = bm.num_free_blocks()
         bm.append_slot(r)
         assert bm.num_free_blocks() == free_before
@@ -226,10 +200,10 @@ class TestBlockManager:
     def test_can_append_slot_false_when_pool_empty_at_boundary(self):
         bm = BlockManager(num_blocks=1, block_size=16)
         r = Request("a", prompt_len=16, max_tokens=8)
-        bm.allocate(r)                      # consumes the only block
+        bm.allocate(r)
         r.num_computed_tokens = 16
         assert bm.num_free_blocks() == 0
-        assert not bm.can_append_slot(r)    # boundary crossing, nothing free
+        assert not bm.can_append_slot(r)
 
 
 class TestSchedulingBudget:
@@ -260,22 +234,18 @@ class TestRequestState:
 
     def test_output_len_derivation(self):
         r = Request("a", prompt_len=20, max_tokens=8)
-        assert r.output_len == 0            # nothing computed
+        assert r.output_len == 0
         r.num_computed_tokens = 20
-        assert r.output_len == 0            # prefill done, no tokens generated
+        assert r.output_len == 0
         r.num_computed_tokens = 23
         assert r.output_len == 3
 
-
-# ============================================================================
-# Preemption contract (white-box, no loop-timing ambiguity)
-# ============================================================================
 
 class TestPreemption:
 
     def test_preempt_frees_resets_and_requeues(self):
         sch, bm = build(num_blocks=16, block_size=16)
-        r = Request("victim", prompt_len=48, max_tokens=8)  # 3 blocks
+        r = Request("victim", prompt_len=48, max_tokens=8)
         bm.allocate(r)
         r.num_computed_tokens = 50
         r.status = SeqStatus.RUNNING
@@ -292,11 +262,7 @@ class TestPreemption:
         assert bm.num_free_blocks() == free_before + 3
 
     def test_tight_pool_forces_preemption_and_still_drains(self):
-        # Enough blocks for the prompts, but not for everyone to decode far at
-        # once -> the scheduler must preempt to make progress, and must still finish.
         block_size = 16
-        # 4 requests, each prompt ~1 block, generating many tokens; pool sized so
-        # they can't all grow simultaneously.
         sch, bm = build(num_blocks=6, block_size=block_size,
                         max_num_batched_tokens=4096, max_num_seqs=8)
         reqs = add_requests(sch, [(16, 40, 0.0) for _ in range(4)])
@@ -310,10 +276,6 @@ class TestPreemption:
         assert bm.num_free_blocks() == 6, "pool must be fully restored after drain"
 
 
-# ============================================================================
-# Deterministic end-to-end scenarios (stop_prob = 0)
-# ============================================================================
-
 class TestDeterministicScenarios:
 
     def test_single_request_exact_ticks_and_output(self):
@@ -321,7 +283,6 @@ class TestDeterministicScenarios:
         [r] = add_requests(sch, [(30, 10, 0.0)])
         order, ticks, _ = run_to_completion(sch, bm, [r], num_blocks=64, block_size=16)
 
-        # 1 prefill tick + max_tokens decode ticks, scheduled alone every step.
         assert ticks == 1 + 10
         assert r.output_len == 10
         assert r.status == SeqStatus.FINISHED
@@ -348,17 +309,12 @@ class TestDeterministicScenarios:
 
     @pytest.mark.parametrize("prompt_len", [15, 16, 17, 31, 32, 33, 48])
     def test_block_boundary_prompt_sizes(self, prompt_len):
-        # Exercise off-by-one-block conditions in allocate/append_slot.
         sch, bm = build(num_blocks=64, block_size=16)
         [r] = add_requests(sch, [(prompt_len, 20, 0.0)])
         run_to_completion(sch, bm, [r], num_blocks=64, block_size=16)
         assert r.status == SeqStatus.FINISHED
         assert bm.num_free_blocks() == 64
 
-
-# ============================================================================
-# Determinism
-# ============================================================================
 
 class TestDeterminism:
 
@@ -373,23 +329,21 @@ class TestDeterminism:
         assert one_run() == one_run()
 
 
-# ============================================================================
-# Fuzz / property tests — the robustness centerpiece
-# ============================================================================
-
 class TestFuzz:
 
     @pytest.mark.parametrize("seed", range(25))
     def test_random_workloads_hold_all_invariants(self, seed):
         rng = random.Random(seed)
-        random.seed(seed)  # also seed the module RNG the scheduler/executor use
+        random.seed(seed)
 
         block_size = rng.choice([8, 16, 32])
         num_blocks = rng.randint(8, 40)
-        # Cap prompt length so every prompt fits in the pool on its own; a prompt
-        # needing more blocks than exist can never be scheduled under pure
-        # recomputation (see TestKnownLimitations), which is out of scope here.
-        max_prompt_tokens = num_blocks * block_size
+        # Reserve room for the tokens each request will generate (max_tokens <= 30)
+        # so the WHOLE live sequence (prompt + output) fits in the pool. Capping
+        # only the prompt is not enough: under pure recomputation a sequence whose
+        # prompt+output exceeds the pool can never hold its full KV and livelocks,
+        # exactly as TestKnownLimitations documents for over-pool prompts.
+        max_prompt_tokens = num_blocks * block_size - 30
         max_prompt = max(1, min(max_prompt_tokens, rng.randint(1, 200)))
 
         n = rng.randint(1, 20)
@@ -410,31 +364,21 @@ class TestFuzz:
         )
         reqs = add_requests(sch, specs)
 
-        # run_to_completion checks partition + coverage each tick and budget at the
-        # end, and fails on livelock. Reaching here means every invariant held.
         run_to_completion(sch, bm, reqs, num_blocks=num_blocks, block_size=block_size)
 
         assert all(r.status == SeqStatus.FINISHED for r in reqs)
         assert bm.num_free_blocks() == num_blocks
 
 
-# ============================================================================
-# Known limitations — documents behavior rather than asserting a bug
-# ============================================================================
-
 class TestKnownLimitations:
 
     def test_prompt_larger_than_pool_never_schedules(self):
-        """Under pure recomputation, a prompt that needs more blocks than the whole
-        pool can never be admitted. This isn't a bug — it's the tradeoff recomputation
-        makes. If you later add swapping or chunked prefill, this test will flip and
-        flag the behavior change, which is exactly what you want it to do."""
         block_size = 16
-        num_blocks = 4                       # 64 tokens of capacity total
+        num_blocks = 4
         sch, bm = build(num_blocks=num_blocks, block_size=block_size)
-        [r] = add_requests(sch, [(200, 5, 0.0)])  # needs 13 blocks
+        [r] = add_requests(sch, [(200, 5, 0.0)])
 
-        for _ in range(50):                  # bounded: this loop must NOT drain
+        for _ in range(50):
             if not sch.has_unfinished():
                 break
             sch.step()

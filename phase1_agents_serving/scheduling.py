@@ -58,12 +58,12 @@ class Request:
         Naive (non-chunked) prefill is all-or-nothing, so this is just
         num_computed_tokens < prompt_len.
         """
-        return self.num_computed_tokens < prompt_len
+        return self.num_computed_tokens < self.prompt_len
 
     @property
     def output_len(self) -> int:
         """Generated tokens so far (0 until prefill has completed)."""
-        return self.num_computed_tokens
+        return max(0, self.num_computed_tokens - self.prompt_len)
 
 
 # ----------------------------------------------------------------------------
@@ -83,11 +83,11 @@ class SchedulingBudget:
 
     def can_add(self, num_tokens: int) -> bool:
         """Would adding a seq computing `num_tokens` this step stay within both caps?"""
-        return self.num_batched_tokens + num_tokens < self.max_num_batched_tokens and self.num_seqs + 1 < self.max_num_seqs
+        return self.num_batched_tokens + num_tokens <= self.max_num_batched_tokens and self.num_seqs + 1 <= self.max_num_seqs
 
     def add(self, num_tokens: int) -> None:
         """Commit a seq to this step's budget."""
-        self.num_batched_tokens += 1
+        self.num_batched_tokens += num_tokens
         self.num_seqs += 1
 
 
@@ -131,14 +131,14 @@ class BlockManager: # Are token values themselves stored or just kv? Where are k
     # --- prefill path ---
     def can_allocate(self, req: Request) -> bool:
         """Prefill admission: enough free blocks for the entire prompt?"""
-        return self.free_blocks >= self._block_for(req.prompt_len)
+        return self.num_free_blocks() >= self._blocks_for(req.prompt_len)
 
     def allocate(self, req: Request) -> None:
         """Prefill: pop blocks off the free list into req.block_ids to cover prompt_len."""
         n = 0
         blocks_needed = self._blocks_for(req.prompt_len)
-        while n * self.block_size < blocks_needed:
-            req.block_ids.append(self.free_blocks.popleft())
+        while n < blocks_needed:
+            req.block_ids.append(self.free_blocks.pop())
             n += 1
 
     # --- decode path ---
@@ -150,8 +150,8 @@ class BlockManager: # Are token values themselves stored or just kv? Where are k
         the last block for free. Return True if no new block is needed, or if one
         is needed and at least one is free.
         """
-        if (req.num_computed_tokens+1)%self.block_size == 0:
-            return len(self.free_blocks) != 0:
+        if (req.num_computed_tokens)%self.block_size == 0:
+            return len(self.free_blocks) != 0
         return True
 
 
@@ -160,7 +160,7 @@ class BlockManager: # Are token values themselves stored or just kv? Where are k
         onto req.block_ids. No-op when the current block still has room.
         Call this *before* execute, while num_computed_tokens is pre-increment.
         """
-        if (req.num_computed_tokens+1)%self.block_size == 0:
+        if (req.num_computed_tokens)%self.block_size == 0:
             req.block_ids.append(self.free_blocks.pop())
 
     # --- teardown ---
@@ -170,6 +170,7 @@ class BlockManager: # Are token values themselves stored or just kv? Where are k
         """
         for bid in req.block_ids:
             self.free_blocks.append(bid)
+        req.block_ids = []
 
 
 # ----------------------------------------------------------------------------
@@ -257,37 +258,41 @@ class Scheduler:
         Return the SchedulerOutput. (Decides the batch only; token application
         happens in _process_outputs.)
         """
-        sb = SchedulingBudget(self.num_max_batched_tokens, self.max_num_seqs)
+        sb = SchedulingBudget(self.max_num_batched_tokens, self.max_num_seqs)
         so = SchedulerOutput()
-        for r in self.running:
-            if sb.can_add(1):
-                if self.block_manager.can_append_slot(r):
-                    self.block_manager.append_slot(r)
-                    so.scheduled.append(ScheduledSeq(req, 1, is_prefill=False))
-                    sb.add(1)
-                else:
-                    self._preempt(self.running[-1])
-                    preempted = self.running.pop(-1) # Removing from running here is it's returned?
-                    so.preempted.append(preempted) # append preempted request
-                    if preempted == r: # preempted is the request itself
-                        continue
-                    else:
-                        if self.block_manager.can_append_slot(r):
-                            self.block_manager.append_slot(r)
-                            so.scheduled.append(ScheduledSeq(req, 1, is_prefill=False))
-                            sb.add(1)
-            else:
+        for r in list(self.running):
+            if not any(r is x for x in self.running):
+                continue
+            if not sb.can_add(1):
                 break
-        head = self.waiting.peek()
-        if sb.can_add(head.prompt_len):
-            if self.block_manager.can_allocate(head):
-                h = self.waiting.pop()
-                self.block_manager.allocate(h)
-                h.status = RUNNING
-                self.running.append(h)
-                so.scheduled.append(ScheduledSeq(h, h.prompt_len, is_prefill=True))
-                sb.add(h.prompt_len)
-        return sb
+            preempted_self = False
+            while not self.block_manager.can_append_slot(r):
+                victim = self.running[-1]
+                self._preempt(victim)
+                so.preempted.append(victim.request_id)
+                if victim is r:
+                    preempted_self = True
+                    break
+            if preempted_self:
+                continue
+ 
+            self.block_manager.append_slot(r)
+            so.scheduled.append(ScheduledSeq(r, 1, is_prefill=False))
+            sb.add(1)
+        while self.waiting:
+            head = self.waiting[0]
+            if not sb.can_add(head.prompt_len):
+                break
+            if not self.block_manager.can_allocate(head):
+                break
+            self.waiting.popleft()
+            self.block_manager.allocate(head)
+            head.status = SeqStatus.RUNNING
+            self.running.append(head)
+            so.scheduled.append(ScheduledSeq(head, head.prompt_len, is_prefill=True))
+            sb.add(head.prompt_len)
+ 
+        return so
 
     def _preempt(self, req: Request) -> None:
         """Recomputation preemption. Free the victim's KV, rewind it to a
@@ -297,12 +302,12 @@ class Scheduler:
             - req.status = WAITING
             - remove from running; push to the FRONT (left) of waiting.
         """
-        for bid in req.block_ids:
-            self.block_manager.free(bid)
+        self.block_manager.free(req)
         req.num_computed_tokens = 0
-        req.status = WAITING
-        # Remove from running here or at the call?
-        self.waiting.pushleft(req)
+        req.status = SeqStatus.WAITING
+        if req in self.running:
+            self.running.remove(req)
+        self.waiting.appendleft(req)
 
     def _process_outputs(
         self,
@@ -316,22 +321,26 @@ class Scheduler:
               drop from running, collect into the returned list.
         Return the finished requests.
         """
+        ret = []
         for i, seq in enumerate(scheduled): # where should results be appended?
             if seq.is_prefill:
-                self.num_computed_tokens += seq.num_tokens
+                seq.req.num_computed_tokens += seq.num_tokens
             else:
-                self.num_computed_tokens += 1
-            if self._is_finished(req):
+                seq.req.num_computed_tokens += 1
+            if self._is_finished(seq.req):
                 self.block_manager.free(seq.req)
-                seq.req.status = FINISHED
-                self.running.pop(seq.req)
+                seq.req.status = SeqStatus.FINISHED
+                self.running.remove(seq.req)
+                ret.append(seq.req)
+        return ret
+        
 
 
     def _is_finished(self, req: Request) -> bool:
         """Done = random stop fired this decode step OR output_len >= max_tokens.
         (Only meaningful once the request has left prefill.)
         """
-        if random.randint(1, 100) < req.stop_prob * 100 or req.output_len() > req.max_tokens:
+        if random.random() < req.stop_prob or req.output_len >= req.max_tokens:
             return True
         return False
 
