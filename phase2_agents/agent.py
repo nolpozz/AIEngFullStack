@@ -1,52 +1,94 @@
+import time
 
-import model
-
-# Might have to modernize this this is just how I remember them from a year ago
-
-MAX_LOOPS = 10
-
+from .model import chat
+from .tools import TOOLS, execute_tool_call
+from tracing.tracer import Tracer
 
 
-TOOLS = [
-    {
+SYSTEM_PROMPT = """
+You are a web research assistant.
 
-    },
-    {
+Use search_web when the user's question requires current,
+external, or web-based information.
 
-    },
-]
+When using search results:
+- Prefer authoritative sources.
+- Base factual claims on retrieved evidence.
+- Cite sources using their source IDs, like [S1] or [S2].
+- Do not search unnecessarily.
+- If the retrieved information is insufficient, search again with
+  a better query.
+"""
 
 
-messages = [ # check that the model we're using uses these same tags
-    {"role": "system", "content": SYSTEM_PROMPT},
-    {"role": "user", "content": question},
-]
+def run_agent(question: str, max_steps: int = 6) -> str:
+    tracer = Tracer()
 
+    messages = [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT,
+        },
+        {
+            "role": "user",
+            "content": question,
+        },
+    ]
 
-for step in range(MAX_LOOPS):
+    try:
+        for step in range(max_steps):
+            started_at = time.time()
+            start = time.perf_counter()
 
-    response = model.chat(
-        messages=messages,
-        tools=TOOLS
-    )
+            response = chat(
+                messages=messages,
+                tools=TOOLS,
+            )
 
-    messages.append(response)
+            latency_ms = (
+                time.perf_counter() - start
+            ) * 1000
 
-    if not response.tool_calls:
-        return response.content
+            usage = response.usage
 
-    for call in response.tool_calls:
-        if call.name == "search_web":
-            result = search_web(**call.arguments)
-        elif call.name == fetch_page:
-            reseult = fetch_page(**call.arguments)
-        
-        # tool logging sent to tracing with metrics
-        
-        messages.append({
-            "role": "tool",
-            "tool_call_id": call.id,
-            "content": json.dumps(result),
-        })
-    
-    return MaxStepsExceeded()
+            tracer.log_model_call(
+                call_index=step,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                latency_ms=latency_ms,
+                timestamp=started_at,
+            )
+
+            message = response.choices[0].message
+            messages.append(message)
+
+            if not message.tool_calls:
+                return message.content or ""
+
+            for tool_call in message.tool_calls:
+                tool_start = time.perf_counter()
+
+                result = execute_tool_call(tool_call)
+
+                tool_latency_ms = (
+                    time.perf_counter() - tool_start
+                ) * 1000
+
+                tracer.log_tool_call(
+                    name=tool_call.function.name,
+                    arguments=tool_call.function.arguments,
+                    latency_ms=tool_latency_ms,
+                )
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                })
+
+        raise RuntimeError(
+            f"Agent exceeded max_steps={max_steps}"
+        )
+
+    finally:
+        tracer.finish()

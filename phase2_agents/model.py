@@ -1,10 +1,12 @@
 
-from openai import openai
+from openai import OpenAI
 
 
-MODEL_NAME = "" # k2 or whatever we use
-BASE_URL = "" # modal url
-
+MODEL_NAME = "IFM/K2-Horizon-32B" # k2 or whatever we use
+BASE_URL = (
+    "https://nolpozz--vllm-inference-for-web-search-agent-server-dev."
+    "us-east.modal.direct/v1"
+)
 
 client = OpenAI( # I'm p sure this is stil how these work
     base_url=BASE_URL,
@@ -23,7 +25,7 @@ def chat(messages, tools=None, temperature = 0.0, max_tokens=1024):
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
     
-    response = client.chat.completion.create(**kwargs)
+    response = client.chat.completions.create(**kwargs)
 
     return response.choices[0].message
 

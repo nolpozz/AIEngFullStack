@@ -41,7 +41,7 @@ vllm_cache_vol = modal.Volume.from_name("vllm-cache", create_if_missing=True)
 # --Tuning--
 GPU_MEM_UTIL = "0.90"
 MAX_MODEL_LEN = "4096"
-MAX_NUM_SEQS = "135" # KV budget / per-sequence cost (approx 2200 tokens at .25 mb/tok)
+MAX_NUM_SEQS = "135" # KV budget // per-sequence cost (approx 2200 tokens at .25 mb/tok)
 MAX_NUM_BATCHED_TOKENS = "8192"
 KV_CACHE_DTYPE = "auto"
 
