@@ -1,5 +1,6 @@
 import time
 
+from .config import MAX_STEPS
 from .model import chat
 from .tools import TOOLS, execute_tool_call
 from tracing.tracer import Tracer
@@ -21,8 +22,9 @@ When using search results:
 """
 
 
-def run_agent(question: str, max_steps: int = 6) -> str:
-    tracer = Tracer()
+def run_agent(question: str, max_steps: int = MAX_STEPS) -> str:
+    tracer = Tracer(question)
+    status = "error" # overwritten if we finish cleanly or run out of steps
 
     messages = [
         {
@@ -38,34 +40,30 @@ def run_agent(question: str, max_steps: int = 6) -> str:
     try:
         for step in range(max_steps):
             started_at = time.time()
-            start = time.perf_counter()
 
-            response = chat(
-                messages=messages,
-                tools=TOOLS,
-            )
-
-            latency_ms = (
-                time.perf_counter() - start
-            ) * 1000
-
-            usage = response.usage
+            try:
+                message, stats = chat(
+                    messages=messages,
+                    tools=TOOLS,
+                )
+            except Exception as e:
+                tracer.log_model_error(step, started_at, e)
+                continue # retry
 
             tracer.log_model_call(
                 call_index=step,
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
-                latency_ms=latency_ms,
                 timestamp=started_at,
+                **stats,
             )
 
-            message = response.choices[0].message
             messages.append(message)
 
-            if not message.tool_calls:
-                return message.content or ""
+            if not message.get("tool_calls"):
+                status = "ok"
+                return message["content"] or ""
 
-            for tool_call in message.tool_calls:
+            for tool_call in message["tool_calls"]:
+                tool_started_at = time.time()
                 tool_start = time.perf_counter()
 
                 result = execute_tool_call(tool_call)
@@ -75,20 +73,24 @@ def run_agent(question: str, max_steps: int = 6) -> str:
                 ) * 1000
 
                 tracer.log_tool_call(
-                    name=tool_call.function.name,
-                    arguments=tool_call.function.arguments,
+                    step=step,
+                    name=tool_call["function"]["name"],
+                    arguments=tool_call["function"]["arguments"],
                     latency_ms=tool_latency_ms,
+                    timestamp=tool_started_at,
+                    result_chars=len(result),
                 )
 
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": tool_call.id,
+                    "tool_call_id": tool_call["id"],
                     "content": result,
                 })
 
+        status = "max_steps"
         raise RuntimeError(
             f"Agent exceeded max_steps={max_steps}"
         )
 
     finally:
-        tracer.finish()
+        tracer.finish(status)

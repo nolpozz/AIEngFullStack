@@ -2,10 +2,8 @@ import subprocess
 import modal
 
 """
-For benchmarking, edit:
-# -- Tuning -- knobs
-# --- Layer 1 tuning knobs ---
-and # bench_vLLM.sh knobs
+For benchmarking, edit the vLLM knobs and endpoint in server_config.py (repo root)
+(run modal from the repo root so it can be imported), and # bench_vLLM.sh knobs
 I'm not sure what request-rate does
 We may need N_GPU to be 2 if we start with the unquantized model because it prolly needs 2xH100 to run
 quantized version should fit on one
@@ -28,29 +26,29 @@ vllm_image = (
         "torch>=2.8.0",
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    .add_local_python_source("server_config") # so the container can import it too
 )
 
-MODEL_NAME = "IFM/K2-Horizon-32B"
-
+# Server settings live in server_config.py (repo root); run modal from the repo root
+from server_config import (
+    FAST_BOOT,
+    GPU_MEM_UTIL,
+    GPU_TYPE,
+    KV_CACHE_DTYPE,
+    MAX_MODEL_LEN,
+    MAX_NUM_BATCHED_TOKENS,
+    MAX_NUM_SEQS,
+    MODEL_NAME,
+    N_GPU,
+)
 
 
 hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=True)
 vllm_cache_vol = modal.Volume.from_name("vllm-cache", create_if_missing=True)
 
 
-# --Tuning--
-GPU_MEM_UTIL = "0.90"
-MAX_MODEL_LEN = "4096"
-MAX_NUM_SEQS = "135" # KV budget // per-sequence cost (approx 2200 tokens at .25 mb/tok)
-MAX_NUM_BATCHED_TOKENS = "8192"
-KV_CACHE_DTYPE = "auto"
-
-# -- set to False when benchmarking --
-FAST_BOOT = False # When False, vLLM will run JIT kernel optimization and CUDA graph capture
-
 app = modal.App("vllm-inference-for-web-search-agent")
 
-N_GPU = 2
 MINUTES = 60 # in seconds
 VLLM_PORT = 8000
 ROUTING_REGION = "us-east"
@@ -58,7 +56,7 @@ ROUTING_REGION = "us-east"
 # layer 2 tuning knobs. What size/how many gpus, concurrency; controls container/serverless level
 @app.server(
     image=vllm_image,
-    gpu=f"H100:{N_GPU}", # What size is necessary? Prolly 2xH100 or we use quantized version
+    gpu=f"{GPU_TYPE}:{N_GPU}", # What size is necessary? Prolly 2xH100 or we use quantized version
     startup_timeout=10*MINUTES, # How long should it take?
     target_concurrency=256, # How many requests modal aims to put in one container before spinning up another; doesn't matter unless max_containers > 1
     max_containers=1,
@@ -101,10 +99,10 @@ class Server:
 
         cmd += [
             # --- Layer 1 tuning knobs ---
-            "--gpu-memory-utilization", GPU_MEM_UTIL,
-            "--max-model-len", MAX_MODEL_LEN,
-            "--max-num-seqs", MAX_NUM_SEQS,
-            "--max-num-batched-tokens", MAX_NUM_BATCHED_TOKENS,
+            "--gpu-memory-utilization", str(GPU_MEM_UTIL),
+            "--max-model-len", str(MAX_MODEL_LEN),
+            "--max-num-seqs", str(MAX_NUM_SEQS),
+            "--max-num-batched-tokens", str(MAX_NUM_BATCHED_TOKENS),
             "--kv-cache-dtype", KV_CACHE_DTYPE,
         ]
 

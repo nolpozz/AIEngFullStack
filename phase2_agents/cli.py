@@ -1,4 +1,4 @@
-# agent/cli.py
+# phase2_agents/cli.py
 
 import sys
 

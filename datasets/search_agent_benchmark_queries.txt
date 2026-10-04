@@ -1,0 +1,45 @@
+Why does adding an index to a database usually speed up reads but slow down writes?
+Explain the difference between TCP and UDP and give one use case for each.
+What is cosine similarity, and why is it useful for comparing text embeddings?
+A service handles 120 requests per second and each request takes 50 ms of compute time. Roughly how many requests are being processed concurrently?
+What is the difference between precision and recall in binary classification?
+Why can a hash table have O(1) average lookup time but O(n) worst-case lookup time?
+Explain what a race condition is and give a simple example involving two threads.
+What is the purpose of a foreign key in a relational database?
+Compare breadth-first search and depth-first search. When would you prefer each?
+Why does normalization help when computing cosine similarity between vectors?
+Explain the difference between symmetric and asymmetric encryption.
+What does idempotency mean in the context of an HTTP API?
+A model has 32 billion parameters stored in FP16. Approximately how much memory is needed just to store the weights?
+What is the difference between a process and a thread?
+Why might batching requests improve GPU inference throughput while increasing latency?
+What is the current stable version of Python?
+Who is currently the CEO of Intel?
+What is the latest stable release of PostgreSQL?
+What is the current price of one share of NVIDIA stock?
+What is the most recent version of CUDA released by NVIDIA?
+What is the current population estimate for Japan?
+Who won the most recent men's singles title at Wimbledon?
+What is the latest major version of Node.js currently marked as LTS?
+What is the current federal funds target range in the United States?
+What company currently has the largest market capitalization in the world?
+What was the most recent quarterly revenue reported by Microsoft?
+What is the current world record for the men's 100-meter sprint?
+What is the latest stable release of PyTorch?
+Which film won Best Picture at the most recent Academy Awards?
+What is the current price of Bitcoin in U.S. dollars?
+Compare the current market capitalizations of Microsoft and Apple. Which is larger, and by roughly how much?
+Compare the latest stable versions of Python and Node.js. When was each released?
+Compare the most recent quarterly revenue reported by Amazon and Microsoft. Which company reported more?
+What are the current populations of Germany and France, and which country is larger by population?
+Compare the current benchmark interest rates set by the U.S. Federal Reserve and the European Central Bank.
+Find the latest NVIDIA GPU architecture and the latest AMD data-center GPU architecture. Briefly compare their target workloads.
+What are the latest stable releases of PostgreSQL and MySQL, and which was released more recently?
+Compare the current stock prices of NVIDIA and AMD. Which has the higher share price?
+Who won the most recent men's singles titles at Wimbledon and the US Open?
+Find the latest quarterly revenue for Google Cloud and AWS. Which cloud business is larger by revenue?
+Compare the current unemployment rates in the United States and Canada.
+What are the current prices of Bitcoin and Ethereum, and what is the approximate BTC-to-ETH price ratio?
+Compare the latest stable releases of PyTorch and TensorFlow. Which one was released more recently?
+What are the current populations of New York City and Los Angeles, and roughly how many more people live in the larger city?
+Find the latest reported quarterly revenue for NVIDIA and AMD. How many times larger is the larger company's revenue?

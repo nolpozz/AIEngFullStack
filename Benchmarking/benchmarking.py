@@ -5,7 +5,7 @@ home-network latency in the numbers.
 
 HOW TO USE:
   1. Make sure your server is up in another terminal:  modal serve modalForvLLM.py
-  2. Paste that server's URL into SERVER_URL below.
+  2. Paste that server's URL into SERVER_URL in server_config.py (repo root).
   3. Run:  modal run bench_modal.py
   4. Watch the stats tables stream back in your terminal.
   5. Download the saved JSONs:  modal volume get k2-bench-results / ./results
@@ -17,9 +17,8 @@ import modal
 # ==========================================================================
 # EDIT THESE  ---  everything you'd normally change lives in this block
 # ==========================================================================
-SERVER_URL   = "https://nolpozz--vllm-inference-for-web-search-agent-server-dev.us-east.modal.direct"
-MODEL_NAME   = "IFM/K2-Horizon-32B"
-INPUT_LEN    = 2000                     # tokens per prompt
+from server_config import MODEL_NAME, SERVER_URL  # shared with the server; run modal from the repo root
+INPUT_LEN   = 2000                     # tokens per prompt
 OUTPUT_LEN   = 200                      # tokens generated per request
 CONCURRENCIES = [1, 16, 64, 96, 128]    # the sweep — brackets the ~110 knee / ~135 ceiling
 SEED         = 411
@@ -35,6 +34,7 @@ bench_image = (
         "huggingface_hub[hf_transfer]>=0.35.0",
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    .add_local_python_source("server_config") # so the container can import it too
 )
 
 app = modal.App("k2-benchmark", image=bench_image)
@@ -58,6 +58,7 @@ def run_sweep():
             "--max-concurrency", str(c),
             "--seed", str(SEED),
             "--save-result",
+            "--ignore-eos",
             "--result-filename", f"/results/run_c{c}.json",
         ]
         print(f"\n===== concurrency {c} =====", flush=True)

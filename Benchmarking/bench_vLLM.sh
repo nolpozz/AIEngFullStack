@@ -1,15 +1,15 @@
 # bench.sh
-URL="https://nolpozz--vllm-inference-for-web-search-agent-server-dev.us-east.modal.direct"
-for C in 1 16 64 96 128; do
-  python bench_openai.py \
-    --base-url "$URL" \
-    --model IFM/K2-Horizon-32B \
-    --input-len 2000 --output-len 200 \
-    --num-prompts $((C * 4)) \
-    --max-concurrency "$C" \
-    --seed 411 \
-    --result-filename "run_c${C}.json"
-done
+# URL="https://nolpozz--vllm-inference-for-web-search-agent-server-dev.us-east.modal.direct"
+# for C in 1 16 64 96 128; do
+#   python bench_openai.py \
+#     --base-url "$URL" \
+#     --model IFM/K2-Horizon-32B \
+#     --input-len 2000 --output-len 200 \
+#     --num-prompts $((C * 4)) \
+#     --max-concurrency "$C" \
+#     --seed 411 \
+#     --result-filename "run_c${C}.json"
+# done
 
 # for CONCURRENCY in 1 8 32 64; do
 #   vllm bench serve \

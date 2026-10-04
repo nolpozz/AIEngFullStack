@@ -1,14 +1,24 @@
-# agent/tools.py
+# phase2_agents/tools.py
 
 import json
 import os
-
 import requests
+from dotenv import load_dotenv
+from openai import OpenAI
+import numpy as np
+
+from .config import BRAVE_MAX_TOKENS, BRAVE_MAX_URLS
+
+load_dotenv()
 
 
 BRAVE_API_KEY = os.environ["BRAVE_SEARCH_API_KEY"]
-
 BRAVE_CONTEXT_URL = "https://api.search.brave.com/res/v1/llm/context"
+import sqlite3
+import json
+from pathlib import Path
+
+DB_PATH = Path(__file__).resolve().parent.parent / "search_cache.db"
 
 
 TOOLS = [
@@ -34,18 +44,86 @@ TOOLS = [
     }
 ]
 
+client = OpenAI()
+
+def embed(text):
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return response.data[0].embedding
+
+def cosine(a, b):
+    a = np.asarray(a)
+    b = np.asarray(b)
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+def check_cache(query_embedding) -> dict | None:
+    # return result if there is > 0.95 similarity and None otherwise
+    max_sim = 0.0
+    max_res = None
+
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT embedding, response FROM search_cache"
+        ).fetchall()
+
+    for embedding_json, response_json in rows:
+        embedding = json.loads(embedding_json)
+        sim = cosine(embedding, query_embedding)
+        if sim > 0.95 and sim > max_sim:
+            max_sim = sim
+            max_res = json.loads(response_json)
+    return max_res
+
+def add_result(query, query_embedding, response: dict):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO search_cache (query, embedding, response)
+            VALUES (?, ?, ?)
+            """,
+            (
+                query,
+                json.dumps(query_embedding),
+                json.dumps(response),
+            ),
+        )
+
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS search_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT NOT NULL,
+                embedding TEXT NOT NULL,
+                response TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+init_db() # runs once at import; safe to repeat because of IF NOT EXISTS
 
 def search_web(query: str) -> dict:
+    # check cache, if there's nothin similar in the cache, then run the request
+    query_embedding = embed(query)
+    result = check_cache(query_embedding)
+    if result is not None: # cache hit
+        return {
+            "query": query,
+            "results": result,
+        }
+
     response = requests.get(
         BRAVE_CONTEXT_URL,
         headers={
             "X-Subscription-Token": BRAVE_API_KEY,
             "Accept": "application/json",
         },
-        params={
+        params={ # keep these the same across runs
             "q": query,
-            "maximum_number_of_urls": 5,
-            "maximum_number_of_tokens": 6000,
+            "maximum_number_of_urls": BRAVE_MAX_URLS,
+            "maximum_number_of_tokens": BRAVE_MAX_TOKENS,
         },
         timeout=15,
     )
@@ -67,6 +145,8 @@ def search_web(query: str) -> dict:
                 "snippets": item.get("snippets", []),
             }
         )
+    
+    add_result(query, query_embedding, results)
 
     return {
         "query": query,
@@ -75,10 +155,10 @@ def search_web(query: str) -> dict:
 
 
 def execute_tool_call(tool_call) -> str:
-    tool_name = tool_call.function.name
+    tool_name = tool_call["function"]["name"]
 
     try:
-        arguments = json.loads(tool_call.function.arguments)
+        arguments = json.loads(tool_call["function"]["arguments"])
     except json.JSONDecodeError as exc:
         return json.dumps({
             "error": f"Invalid tool arguments: {exc}"

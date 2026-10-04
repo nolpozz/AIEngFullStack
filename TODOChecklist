@@ -1,0 +1,69 @@
+Checklist
+
+A. Fix things that break runs
+
+ Raise MAX_MODEL_LEN to 32k–64k (the recipe uses 131072). Make sure prompt + max_tokens fits. -
+ Wrap chat() in try/except. Log failures as trace events instead of letting them kill the run. - 
+ Load .env (python-dotenv, or export the key) so tools.py doesn't raise a KeyError on import. - 
+ Set max_retries=0 on the OpenAI client. -
+ Fix the stale paths in the docstrings and README. - 
+
+B. Fix the workload definition (decide once, then keep fixed)
+
+ Set reasoning effort explicitly through chat_template_kwargs. - 
+ Use the temperature the model card recommends, not 0. -
+ Choose the Brave token cap, max_tokens and max_steps, and write them down. - 
+ Build a search cache: record real Brave results once, then replay them during load tests. This avoids rate limits and makes runs repeatable. -
+ Assemble a question set of ~30–50 questions: some need search, some don't, some need a second query. -
+
+C. Tracing that can support the analysis
+
+ Stream model calls with include_usage and record TTFT and decode time separately. - 
+ Record a timestamp, step index and result size (in tokens) for each tool call. - (size is in chars)
+ Give each run a config_id/tag: server settings, concurrency, workload settings. Use one trace file per sweep point, or filter by tag. - 
+ Make writes safe under concurrency: one writer, or an asyncio queue. - (for threads)
+
+Gamma. Overview of metrics and harnesses
+ Drop benchmarking.py. It was for mock runs and should be replaced by agent_benchmark.py, which is actual workloads.
+ After one agent is run 2-3 times and approximate workloads are established, calculate the range of hyperparams.
+ Get latency,, KV footprint, and calculate p90 under X seconds or whatever metric we ant. 
+ Move on to concurrency tests, ensuring proper warmup, steady-state window?, populated cache, redeploying the server for every config change,
+ decide what "best config" means. What are we looking for? 
+ Some of the below points may be stale. 
+
+D. Benchmark harness
+
+ Write agent_benchmark.py: run N agents concurrently from the question set, using an async client or a thread pool.
+ Capture per-agent end-to-end time, plus p50/p90/p99 tasks per minute and error count.
+ Also scrape vLLM's /metrics during runs: running/waiting requests, KV-cache usage %, preemptions, prefix-cache hit rate. These tell you why latency changed.
+ Fix benchmarking.py: use at least ~32 prompts per point, add a discarded warmup pass, and run it in the server's region.
+
+E. Measure the baseline
+
+ Run the synthetic vllm bench sweep once as a baseline for the raw server.
+ Run the question set at concurrency 1. Get the distribution of calls per run, prompt and completion tokens per call, tool latency, and the share of time spent in the model vs. tools.
+ Use those numbers to redo the KV math above for your real per-agent footprint and expected server concurrency.
+
+F. Define "best"
+
+ Write the objective down before sweeping. For example: maximize agents per GPU-hour while keeping p90 task time ≤ X seconds and errors at 0.
+
+G. Sweep
+
+ Run agents = 1, 2, 4, 8, 16, 32, 64, 96, 128 on the default config. Find where it saturates: KV usage hits ~100%, preemptions start, and p90 bends upward.
+ Change one setting at a time (list below) and re-run only the points around that saturation point.
+ Re-run the best config across the full sweep to confirm it.
+
+H. Before kernels
+
+ Profile the best config (torch profiler or nsys) to see whether prefill attention, decode attention or the MLP layers dominate. Let that decide what kernel you write.
+Settings you'll be checking
+
+Main ones (vLLM):
+
+Knob	What it trades	Starting range
+kv_cache_dtype	auto vs fp8: capacity vs a little accuracy	{auto, fp8}
+max_num_batched_tokens	Chunked prefill per step: bigger means lower TTFT for long agent prompts but choppier decode for everyone else	2k, 4k, 8k, 16k
+max_num_seqs	Cap on batch size. Past KV capacity it only causes preemption	From E's math: ~0.5×, 1×, 2× of KV tokens ÷ avg context
+gpu_memory_utilization	More KV vs OOM risk	0.88–0.95
+max_model_len	Sets the longest allowed request, not memory use	Fixed at whatever your agents need

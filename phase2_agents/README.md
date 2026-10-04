@@ -63,9 +63,9 @@ The Python agent executes the requested tool and sends the result back to the mo
 
 ```text
 phase2_agents/
-├── __init__.py
 ├── agent.py
 ├── cli.py
+├── config.py
 ├── model.py
 ├── tools.py
 └── README.md
@@ -156,22 +156,25 @@ The basic loop is:
 
 ```python
 for step in range(max_steps):
-    response = chat(messages, tools=TOOLS)
+    message, stats = chat(messages, tools=TOOLS)
+    tracer.log_model_call(step, ..., **stats)
 
-    messages.append(response)
+    messages.append(message)
 
-    if not response.tool_calls:
-        return response.content
+    if not message.get("tool_calls"):
+        return message["content"]
 
-    for tool_call in response.tool_calls:
+    for tool_call in message["tool_calls"]:
         result = execute_tool_call(tool_call)
 
         messages.append({
             "role": "tool",
-            "tool_call_id": tool_call.id,
+            "tool_call_id": tool_call["id"],
             "content": result,
         })
 ```
+
+`chat()` streams the response and returns the assistant message as a dict plus `stats` (token counts, TTFT, decode time), which go to the tracer.
 
 The maximum number of steps prevents a model from searching indefinitely.
 
@@ -273,7 +276,7 @@ Start the Phase 1 vLLM server on Modal.
 For example:
 
 ```bash
-modal serve phase1_inference/modalForvLLM.py
+modal serve phase1_serving/modalForvLLM.py
 ```
 
 Modal will return the URL for the deployed service.
