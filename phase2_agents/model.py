@@ -40,6 +40,7 @@ def chat(messages, tools=None):
     t_first_visible = None  # first content OR tool-call token
 
     content = ""
+    reasoning_text = ""
     tool_calls = {}  # index -> tool call being assembled from fragments
     usage = None
     finish_reason = None
@@ -54,7 +55,9 @@ def chat(messages, tools=None):
 
         choice = chunk.choices[0]
         delta = choice.delta
-        reasoning = getattr(delta, "reasoning_content", None) # vLLM's extra field
+        reasoning = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+        if reasoning:
+            reasoning_text += reasoning
 
         if (reasoning or delta.content or delta.tool_calls) and t_first_any is None:
             t_first_any = now
@@ -82,7 +85,7 @@ def chat(messages, tools=None):
 
     t_end = time.perf_counter()
 
-    message = {"role": "assistant", "content": content}
+    message = {"role": "assistant", "content": content, "reasoning_content": reasoning_text}
     if tool_calls:
         message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
 

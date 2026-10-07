@@ -1,2 +1,12 @@
 __pycache__/
 .env
+.DS_Store
+.venv/
+Benchmarking/bench-client/
+tracing/*.jsonl
+tracing/first_run*.json
+vllm_metrics.jsonl
+*.nsys-rep
+*.pt.trace.json*
+profiles/
+search_cache.db

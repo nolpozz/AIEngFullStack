@@ -71,7 +71,7 @@ def check_cache(query_embedding) -> dict | None:
     for embedding_json, response_json in rows:
         embedding = json.loads(embedding_json)
         sim = cosine(embedding, query_embedding)
-        if sim > 0.95 and sim > max_sim:
+        if sim > 0.90 and sim > max_sim:
             max_sim = sim
             max_res = json.loads(response_json)
     return max_res

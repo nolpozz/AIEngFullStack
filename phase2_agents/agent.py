@@ -21,6 +21,9 @@ When using search results:
   a better query.
 """
 
+class MaxStepsExceeded(RuntimeError):
+    pass
+
 
 def run_agent(question: str, max_steps: int = MAX_STEPS) -> str:
     tracer = Tracer(question)
@@ -88,7 +91,7 @@ def run_agent(question: str, max_steps: int = MAX_STEPS) -> str:
                 })
 
         status = "max_steps"
-        raise RuntimeError(
+        raise MaxStepsExceeded(
             f"Agent exceeded max_steps={max_steps}"
         )
 

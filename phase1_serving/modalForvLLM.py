@@ -57,10 +57,10 @@ ROUTING_REGION = "us-east"
 @app.server(
     image=vllm_image,
     gpu=f"{GPU_TYPE}:{N_GPU}", # What size is necessary? Prolly 2xH100 or we use quantized version
-    startup_timeout=10*MINUTES, # How long should it take?
+    startup_timeout=15*MINUTES, # How long should it take?
     target_concurrency=256, # How many requests modal aims to put in one container before spinning up another; doesn't matter unless max_containers > 1
     max_containers=1,
-    min_containers=0, # If 1 or greater, ensure you do modal app stop or ctrl+c if serving
+    min_containers=1, # If 1 or greater, ensure you do modal app stop or ctrl+c if serving
     scaledown_window=5*MINUTES, # How long idle before shutting off; higher is more cost but fewer cold starts
     port=VLLM_PORT,
     routing_region=ROUTING_REGION,
@@ -93,6 +93,7 @@ class Server:
             "--trust-remote-code",
             "--dtype", "bfloat16",
             "--reasoning-parser", "k2_horizon",
+            "--chat-template-content-format", "string",
             "--enable-auto-tool-choice",
             "--tool-call-parser", "k2_horizon",
         ]
