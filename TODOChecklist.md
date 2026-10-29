@@ -28,43 +28,74 @@
 - [x] Local harness: run_one, build_tasks (shuffled, seeded), run_point (thread pool, closed loop).
 - [x] Server fixes so agent calls work: `--chat-template-content-format string`, `min_containers=1`, longer startup timeout.
 - [x] Model fixes so agent calls work: send reasoning back on assistant messages, read the `reasoning` stream field.
-- [x] Smoke test, then one full pass at concurrency 1 (45 runs, all ok).
-- [ ] Stop retrying 4xx errors in run_agent; retry only 5xx and connection errors.
-- [ ] Populate the search cache: 2-3 passes at concurrency 1, then check the hit rate at the 0.90 threshold.
-- [ ] Measurement window: warmup pass, count only steady-state tasks, n_tasks scaled with concurrency.
-- [ ] Capture per-agent end-to-end time, p50/p90/p99, tasks per minute and error count.
-- [ ] Scrape vLLM's /metrics during the sweep (running/waiting requests, KV usage, preemptions, prefix-cache hits). Separate file, joined to results by timestamp.
-- [ ] Move the harness to Modal: image, secrets, search cache, results volume, one call per sweep point.
+- [x] Smoke test, then three full passes at concurrency 1 (45 runs each).
+- [x] Stop retrying 4xx errors in run_agent; retry only 5xx and connection errors.
+- [x] Populate the search cache with the three passes (0.90 similarity threshold).
+- [x] Timestamped output per run (RUN_TAG): `traces_<tag>.jsonl` and `results_<tag>.json`, so passes never overwrite each other.
+- [x] Log `cache_hit` on every search in the traces. (Passes 1-3 predate it; the hit rate shows from the next run.)
+- [x] Replace the question that spiraled (CUDA version) with a stable-answer one.
+- [x] Analysis script `Benchmarking/analyze.py`: compare runs by metric group, `--trim` for the steady-state window, `--worksheet` for the ranges inputs.
+- [x] Capture per-agent end-to-end time, p50/p90/p99, tasks per minute and error count (in analyze.py).
+- [x] Scrape vLLM's /metrics (`python -m tracing.vllm_metrics`), separate file joined to results by timestamp. Verified locally in passes 2-3.
+- [ ] Measurement window in the harness: discarded warmup pass, n_tasks scaled with concurrency. (analyze.py already trims by time.)
+- [ ] Check the search-cache hit rate from the `cache_hit` field after the next run.
+- [ ] Move the harness and the scraper to Modal: image, secrets, search cache, results volume, one call per sweep point.
 - [ ] Delete benchmarking.py (mock runs; replaced by agent_benchmark.py).
 
 ## E. Baseline and ranges
 
 - [x] Concurrency-1 baseline: calls per run, tokens per call, tool latency, model vs. tool time share.
-- [x] Rough KV math from real contexts (median peak 8.4k tokens, max 15.7k, about 19–35 sequences). Refresh after the extra passes.
-- [ ] Set the hyperparameter ranges from those numbers (see the settings table below).
+- [x] Rough KV math from real contexts (pass 1). Redo it by hand in the worksheet with all three passes.
+- [x] Work through `Benchmarking/ranges_worksheet.ipynb` to set the hyperparameter ranges and the agent sweep points. Reference: `Benchmarking/parameter_relationships.md`.
 
 ## F. Define "best"
 
-- [ ] Write the objective down before sweeping. For example: maximize agents per GPU-hour while keeping p90 task time ≤ X seconds and errors at 0.
+Two objectives, both read from the same sweep. Each one picks its own best config and gets its own kernel in H.
+
+- [x] **Throughput (T):** maximize completed tasks per hour over all configs (S, B) and agent counts (A).
+  - Constraints: 0 errors; p90 task time ≤ 3× the concurrency-1 p90.
+  - Tie-break: among results within 5% of the best, take the lowest A.
+  - Expected operating point: running batch ≈ N_kv (~36). Expected kernel target: decode attention.
+- [x] **Latency (L):** minimize p90 task time at A = 8.
+  - Constraint: 0 errors.
+  - Expected operating point: small batch. Expected kernel target: weight matrix-vector products and the TP all-reduce.
 
 ## G. Sweep
 
-- [ ] Run agents = 1, 2, 4, 8, 16, 32, 64, 96, 128 on the default config, with warmup and a populated cache. Find where it saturates: KV usage hits ~100%, preemptions start, and p90 bends upward.
-- [ ] Change one setting at a time (list below) and re-run only the points around that saturation point. Redeploy the server for every config change.
-- [ ] Re-run the best config across the full sweep to confirm it.
+Knobs: S = `max_num_seqs`, B = `max_num_batched_tokens`. Everything else is fixed (table below).
+
+- [ ] Before sweeping: harness on Modal, discarded warmup, n_tasks rule below, search cache replay so misses don't hit Brave live.
+- [ ] Before sweeping: check that the CUDA graph max capture size is ≥ 72 (the largest S) on the vLLM image.
+- [ ] **Low-load points** (latency objective; S doesn't matter here because demand < every S): A = 1, 4, 8 for each B in {2048, 4096, 8192, 16384}, with S = 36. 4 configs × 3 points.
+- [ ] **Knee points** (throughput objective): A = 16, 24, 32, 48, 64, 96 for every (S, B) in {18, 36, 72} × {2048, 4096, 8192, 16384}. 12 configs × 6 points.
+- [ ] Pick the T winner and the L winner from the objectives in F.
+- [ ] **Full curve** for each winner, to confirm it: A = 1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128.
+- n_tasks per point: `45 × ceil(4A / 45)`, minimum 90 (multiples of 45 keep the question mix balanced). Trim the warmup and the end drain with `--trim`.
+- Redeploy the server for every config change. Total: ~84 grid points + 2 confirmation curves, 12 redeploys.
 
 ## H. Before kernels
 
-- [ ] Freeze the best config. Profile it (torch profiler or nsys) to see whether prefill attention, decode attention or the MLP layers dominate. Let that decide what kernel you write.
+- [ ] Note the throughput winner's saturation point: it becomes `target_concurrency` if this ever scales past one container. Re-check it after the kernel, since a faster kernel moves the knee. (See the comment above `@app.server` in `phase1_serving/modalForvLLM.py`.)
+- [ ] Freeze the T and L configs. Profile each at its operating point (torch profiler or nsys) to see whether prefill attention, decode attention, the MLP/projection matmuls or the all-reduce dominate. Let that decide each kernel.
 
-## Settings you'll be checking
+## Settings
 
-Main ones (vLLM):
+Swept:
 
-| Knob | What it trades | Starting range |
+| Knob | What it trades | Values |
 |---|---|---|
-| kv_cache_dtype | auto vs fp8: capacity vs a little accuracy | {auto, fp8} |
-| max_num_batched_tokens | Chunked prefill per step: bigger means lower TTFT for long agent prompts but choppier decode for everyone else | 2k, 4k, 8k, 16k |
-| max_num_seqs | Cap on batch size. Past KV capacity it only causes preemption | From E's math: ~0.5×, 1×, 2× of KV tokens ÷ avg context |
-| gpu_memory_utilization | More KV vs OOM risk | 0.88–0.95 |
-| max_model_len | Sets the longest allowed request, not memory use | Fixed at whatever your agents need |
+| max_num_seqs (S) | Cap on the running batch. Below N_kv (~36) KV sits idle; above it, short requests pack in but long ones get preempted | 18, 36, 72 |
+| max_num_batched_tokens (B) | Chunked prefill per step: bigger means lower TTFT for long agent prompts but bigger decode stalls for everyone else | 2048, 4096, 8192, 16384 |
+| agents (A) | The load | see G |
+
+Fixed for this sweep:
+
+| Setting | Value | Why fixed |
+|---|---|---|
+| kv_cache_dtype | auto (bf16) | Out of scope for now (would need a quality check) |
+| gpu_memory_utilization | 0.90 | Small, predictable effect (~0.8 requests per +0.01) |
+| GPUs / tensor parallel | 2 | Out of scope for now |
+| max_model_len | 64000 | Sets a limit, not memory use |
+| prefix caching | on | Turning it off only measures a known loss |
+| speculative decoding | off | Deferred, to get to the kernels sooner |
+| workload | reasoning high, MAX_TOKENS 4096, MAX_STEPS 6, cached search | Changing it changes the workload, not the server |

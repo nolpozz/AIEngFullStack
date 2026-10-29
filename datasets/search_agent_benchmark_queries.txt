@@ -17,7 +17,7 @@ What is the current stable version of Python?
 Who is currently the CEO of Intel?
 What is the latest stable release of PostgreSQL?
 What is the current price of one share of NVIDIA stock?
-What is the most recent version of CUDA released by NVIDIA?
+Who won the 2022 FIFA World Cup, and what was the score of the final?
 What is the current population estimate for Japan?
 Who won the most recent men's singles title at Wimbledon?
 What is the latest major version of Node.js currently marked as LTS?

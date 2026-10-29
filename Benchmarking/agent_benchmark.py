@@ -47,8 +47,11 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
 from phase2_agents.agent import run_agent, MaxStepsExceeded
+from phase2_agents.config import CONCURRENCY
+from tracing.tracer import RUN_TAG
 import random
 import json
+import math
 
 SEED=411
 
@@ -89,11 +92,19 @@ def run_point(queries, concurrency, n_tasks):
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         results = list(pool.map(run_one, tasks))
     t_end = time.time()
-    return {"concurrency": concurrency, "t_start": t_start, "t_end": t_end, "results": results}
+    return {"concurrency": concurrency, "n_tasks": n_tasks, "t_start": t_start, "t_end": t_end, "results": results}
+
+def n_tasks_for(concurrency, n_queries):
+    # ~4 tasks per agent, in whole passes over the question set (balanced mix), at least 2 passes
+    return n_queries * max(2, math.ceil(4 * concurrency / n_queries))
 
 
 if __name__ == "__main__":
+    # one sweep point per process, so each point gets its own RUN_TAG and CONFIG_ID:
+    #   CONCURRENCY=16 python -m Benchmarking.agent_benchmark
     queries = load_queries()
-    res = run_point(queries, 1, len(queries))
-    with open("tracing/first_run_benchmarks.json", "w", encoding="utf-8") as f:
+    n_tasks = n_tasks_for(CONCURRENCY, len(queries))
+    print(f"[{RUN_TAG}] concurrency={CONCURRENCY} n_tasks={n_tasks}", flush=True)
+    res = run_point(queries, CONCURRENCY, n_tasks)
+    with open(f"tracing/results_{RUN_TAG}.json", "w", encoding="utf-8") as f:
         json.dump(res, f, indent=2) 

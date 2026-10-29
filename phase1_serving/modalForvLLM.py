@@ -54,6 +54,11 @@ VLLM_PORT = 8000
 ROUTING_REGION = "us-east"
 
 # layer 2 tuning knobs. What size/how many gpus, concurrency; controls container/serverless level
+# Setting target_concurrency from the sweep: once you know where one server saturates (about N_kv
+# requests, or the throughput winner's A), that number is what target_concurrency should be set to
+# if you ever scale to multiple containers. Modal then starts a second server about when the first one
+# hits its knee. A faster kernel moves that knee, which changes the setting. (256 is a placeholder
+# that only has to stay above the sweep's largest A while max_containers=1.)
 @app.server(
     image=vllm_image,
     gpu=f"{GPU_TYPE}:{N_GPU}", # What size is necessary? Prolly 2xH100 or we use quantized version

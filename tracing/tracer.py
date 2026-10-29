@@ -9,7 +9,8 @@ from pathlib import Path
 from phase2_agents.config import CONFIG, CONFIG_ID
 
 
-TRACE_FILE = Path(__file__).parent / "traces.jsonl"
+RUN_TAG = time.strftime("%Y%m%d_%H%M%S") # one per process; also names the benchmark results file
+TRACE_FILE = Path(__file__).parent / f"traces_{RUN_TAG}.jsonl"
 _write_lock = threading.Lock() # one writer at a time across agent threads
 
 
@@ -61,6 +62,7 @@ class Tracer:
         latency_ms: float,
         timestamp: float,
         result_chars: int,
+        cache_hit: bool | None = None,
     ) -> None:
         self.tool_calls += 1
 
@@ -81,6 +83,7 @@ class Tracer:
             "latency_ms": latency_ms,
             "result_chars": result_chars,
             "repeated": repeated,
+            "cache_hit": cache_hit, # search cache; None if the tool did no lookup
         })
 
     def finish(self, status: str) -> None:

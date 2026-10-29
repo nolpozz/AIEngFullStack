@@ -51,7 +51,10 @@ def run_agent(question: str, max_steps: int = MAX_STEPS) -> str:
                 )
             except Exception as e:
                 tracer.log_model_error(step, started_at, e)
-                continue # retry
+                status_code = getattr(e, "status_code", None)
+                if status_code is not None and 400 <= status_code < 500 and status_code not in (408, 429):
+                    raise # a bad request will fail the same way every time; don't burn steps on it
+                continue # retry (5xx, connection errors, timeouts, rate limits)
 
             tracer.log_model_call(
                 call_index=step,
@@ -69,7 +72,7 @@ def run_agent(question: str, max_steps: int = MAX_STEPS) -> str:
                 tool_started_at = time.time()
                 tool_start = time.perf_counter()
 
-                result = execute_tool_call(tool_call)
+                result, cache_hit = execute_tool_call(tool_call)
 
                 tool_latency_ms = (
                     time.perf_counter() - tool_start
@@ -82,6 +85,7 @@ def run_agent(question: str, max_steps: int = MAX_STEPS) -> str:
                     latency_ms=tool_latency_ms,
                     timestamp=tool_started_at,
                     result_chars=len(result),
+                    cache_hit=cache_hit,
                 )
 
                 messages.append({

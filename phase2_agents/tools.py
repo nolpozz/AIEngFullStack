@@ -104,7 +104,8 @@ def init_db():
 
 init_db() # runs once at import; safe to repeat because of IF NOT EXISTS
 
-def search_web(query: str) -> dict:
+def search_web(query: str) -> tuple[dict, bool]:
+    # returns (payload for the model, whether the search cache answered it)
     # check cache, if there's nothin similar in the cache, then run the request
     query_embedding = embed(query)
     result = check_cache(query_embedding)
@@ -112,7 +113,7 @@ def search_web(query: str) -> dict:
         return {
             "query": query,
             "results": result,
-        }
+        }, True
 
     response = requests.get(
         BRAVE_CONTEXT_URL,
@@ -151,10 +152,12 @@ def search_web(query: str) -> dict:
     return {
         "query": query,
         "results": results,
-    }
+    }, False
 
 
-def execute_tool_call(tool_call) -> str:
+def execute_tool_call(tool_call) -> tuple[str, bool | None]:
+    # returns (tool message content, cache_hit); cache_hit is None when no cache lookup happened.
+    # The flag stays out of the content on purpose: the model must see the same prompt either way.
     tool_name = tool_call["function"]["name"]
 
     try:
@@ -162,23 +165,24 @@ def execute_tool_call(tool_call) -> str:
     except json.JSONDecodeError as exc:
         return json.dumps({
             "error": f"Invalid tool arguments: {exc}"
-        })
+        }), None
 
     try:
+        cache_hit = None
         if tool_name == "search_web":
-            result = search_web(**arguments)
+            result, cache_hit = search_web(**arguments)
         else:
             result = {
                 "error": f"Unknown tool: {tool_name}"
             }
 
-        return json.dumps(result)
+        return json.dumps(result), cache_hit
 
     except Exception as exc:
         return json.dumps({
             "error": str(exc),
             "tool": tool_name,
-        })
+        }), None
 
 
 

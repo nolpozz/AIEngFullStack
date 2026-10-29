@@ -10,3 +10,6 @@ vllm_metrics.jsonl
 *.pt.trace.json*
 profiles/
 search_cache.db
+traces_*.jsonl
+tracing/
+archive/

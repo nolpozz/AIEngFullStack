@@ -1,8 +1,8 @@
 # server_config.py
 # Single source of truth for the vLLM server settings and endpoint.
 # Imported by phase1_serving/modalForvLLM.py (launches the server),
-# Benchmarking/benchmarking.py (synthetic sweep) and phase2_agents/config.py
-# (stamps these into every trace via CONFIG_ID). Edit values HERE only.
+# and phase2_agents/config.py, which the agent and Benchmarking/agent_benchmark.py use
+# (it stamps these into every trace via CONFIG_ID). Edit values HERE only.
 # Pure Python on purpose: no modal import, so every consumer can load it.
 
 MODEL_NAME = "IFM/K2-Horizon-32B"
