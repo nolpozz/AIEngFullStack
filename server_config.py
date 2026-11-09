@@ -12,15 +12,20 @@ SERVER_URL = (
 )  # no /v1 suffix; the OpenAI client appends it, vllm bench wants it bare
 
 # -- hardware --
-GPU_TYPE = "H100"
+GPU_TYPE = "H100!"  # "!" stops Modal from silently upgrading to an H200 (config 11 ran on one: W1 749k vs ~300k)
 N_GPU = 2  # also used as --tensor-parallel-size. Might need 2xH100 unquantized; quantized should fit on one
 
 # -- vLLM tuning knobs --
 GPU_MEM_UTIL = 0.90
 MAX_MODEL_LEN = 64000
-MAX_NUM_SEQS = 135  # KV budget // per-sequence cost (approx 2200 tokens at .25 mb/tok)
-MAX_NUM_BATCHED_TOKENS = 8192
+MAX_NUM_SEQS = 36
+MAX_NUM_BATCHED_TOKENS = 4096
 KV_CACHE_DTYPE = "auto"
 
 # -- set to False when benchmarking --
 FAST_BOOT = False  # When False, vLLM will run JIT kernel optimization and CUDA graph capture
+
+# -- profiling (None when benchmarking: the profiler adds overhead) --
+# "torch": the server exposes POST /start_profile and /stop_profile (Benchmarking/capture_profile.py calls them)
+# and writes torch profiler traces to the vllm-profiles Modal volume.
+PROFILER = None

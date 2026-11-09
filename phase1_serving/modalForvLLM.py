@@ -1,3 +1,4 @@
+import json
 import subprocess
 import modal
 
@@ -40,11 +41,14 @@ from server_config import (
     MAX_NUM_SEQS,
     MODEL_NAME,
     N_GPU,
+    PROFILER,
 )
 
 
 hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=True)
 vllm_cache_vol = modal.Volume.from_name("vllm-cache", create_if_missing=True)
+profiles_vol = modal.Volume.from_name("vllm-profiles", create_if_missing=True)  # download: modal volume get vllm-profiles / profiles/
+PROFILE_DIR = "/root/profiles"
 
 
 app = modal.App("vllm-inference-for-web-search-agent")
@@ -73,6 +77,7 @@ ROUTING_REGION = "us-east"
     volumes={
         "/root/.cache/huggingface": hf_cache_vol,
         "/root/.cache/vllm": vllm_cache_vol,
+        PROFILE_DIR: profiles_vol,
     },
 )
 class Server:
@@ -114,6 +119,16 @@ class Server:
 
         cmd += ["--enforce-eager" if FAST_BOOT else "--no-enforce-eager"]
         cmd += ["--tensor-parallel-size", str(N_GPU)] # switch out for --pipeline-parallel-size to put whole layers on different GPUs
+
+        if PROFILER == "torch":
+            # Adds POST /start_profile and /stop_profile. Each TP rank writes its own trace on stop.
+            # Stack capture is off to keep overhead and file size down; shapes help map kernels to layers.
+            cmd += ["--profiler-config", json.dumps({
+                "profiler": "torch",
+                "torch_profiler_dir": PROFILE_DIR,
+                "torch_profiler_with_stack": False,
+                "torch_profiler_record_shapes": True,
+            })]
         print(cmd)
 
         self.process = subprocess.Popen(cmd)
@@ -121,3 +136,6 @@ class Server:
     @modal.exit()
     def stop(self) -> None:
         self.process.terminate()
+        self.process.wait(timeout=60)
+        if PROFILER:
+            profiles_vol.commit()  # make sure the last traces land on the volume before the container goes

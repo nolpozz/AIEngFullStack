@@ -18,6 +18,7 @@ from server_config import (
     MAX_NUM_SEQS,
     MODEL_NAME,
     N_GPU,
+    PROFILER,
     SERVER_URL,
 )
 
@@ -31,6 +32,8 @@ MAX_TOKENS = 4096  # per model call; reasoning tokens count against this
 MAX_STEPS = 6  # model calls per agent run
 BRAVE_MAX_URLS = 3
 BRAVE_MAX_TOKENS = 6000  # cap on the Brave result size
+CACHE_THRESHOLD = 0.90  # cosine similarity above which a cached search counts as a hit
+SEARCH_REPLAY_ONLY = True  # on a miss, replay the nearest cached result instead of calling Brave (no API spend)
 
 # --- server settings that get hashed into CONFIG_ID (values come from server_config.py) ---
 SERVER = {
@@ -41,6 +44,7 @@ SERVER = {
     "max_num_batched_tokens": MAX_NUM_BATCHED_TOKENS,
     "kv_cache_dtype": KV_CACHE_DTYPE,
     "fast_boot": FAST_BOOT,  # enforce-eager vs CUDA graphs changes performance
+    "profiler": PROFILER,  # profiled runs get their own CONFIG_ID, so their (slower) numbers never mix with the sweep
 }
 
 # --- sweep point: how many agents run at once (set by the benchmark harness) ---
@@ -55,6 +59,7 @@ CONFIG = {
     "max_steps": MAX_STEPS,
     "brave_max_urls": BRAVE_MAX_URLS,
     "brave_max_tokens": BRAVE_MAX_TOKENS,
+    "search_replay_only": SEARCH_REPLAY_ONLY,
     "server": SERVER,
     "concurrency": CONCURRENCY,
 }

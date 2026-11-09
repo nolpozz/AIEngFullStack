@@ -6,8 +6,9 @@ import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 import numpy as np
+import threading
 
-from .config import BRAVE_MAX_TOKENS, BRAVE_MAX_URLS
+from .config import BRAVE_MAX_TOKENS, BRAVE_MAX_URLS, CACHE_THRESHOLD, SEARCH_REPLAY_ONLY
 
 load_dotenv()
 
@@ -53,30 +54,39 @@ def embed(text):
     )
     return response.data[0].embedding
 
-def cosine(a, b):
-    a = np.asarray(a)
-    b = np.asarray(b)
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+# In-memory copy of the search cache: unit-normalized embeddings + raw responses, loaded once at import.
+# A lookup is one matrix-vector product instead of parsing every stored embedding per search, which
+# took ~2 s with ~800 rows and, under the GIL, serialized concurrent agents behind each other.
+_cache_lock = threading.Lock()
+_cache_vecs = None  # (n, d) float64, rows normalized; None when the cache is empty
+_cache_resp = []    # response JSON strings, same order as _cache_vecs
 
-def check_cache(query_embedding) -> dict | None:
-    # return result if there is > 0.95 similarity and None otherwise
-    max_sim = 0.0
-    max_res = None
+def _unit(v):
+    v = np.asarray(v, dtype=np.float64)
+    return v / np.linalg.norm(v, axis=-1, keepdims=True)
 
+def _load_cache():
+    global _cache_vecs, _cache_resp
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
-            "SELECT embedding, response FROM search_cache"
+            "SELECT embedding, response FROM search_cache ORDER BY id"
         ).fetchall()
+    _cache_vecs = _unit([json.loads(e) for e, _ in rows]) if rows else None
+    _cache_resp = [r for _, r in rows]
 
-    for embedding_json, response_json in rows:
-        embedding = json.loads(embedding_json)
-        sim = cosine(embedding, query_embedding)
-        if sim > 0.90 and sim > max_sim:
-            max_sim = sim
-            max_res = json.loads(response_json)
-    return max_res
+def check_cache(query_embedding) -> tuple[dict | None, float]:
+    # return (most similar cached result, its cosine similarity); (None, 0.0) if the cache is empty
+    with _cache_lock:
+        vecs, resp = _cache_vecs, _cache_resp
+    if vecs is None:
+        return None, 0.0
+    sims = vecs @ _unit(query_embedding)
+    i = int(np.argmax(sims))
+    return json.loads(resp[i]), max(float(sims[i]), 0.0)
 
 def add_result(query, query_embedding, response: dict):
+    global _cache_vecs, _cache_resp
+    response_json = json.dumps(response)
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
@@ -86,9 +96,13 @@ def add_result(query, query_embedding, response: dict):
             (
                 query,
                 json.dumps(query_embedding),
-                json.dumps(response),
+                response_json,
             ),
         )
+    v = _unit(query_embedding)[None, :]
+    with _cache_lock:  # swap in new objects so readers always see a matching (vecs, resp) pair
+        _cache_vecs = v if _cache_vecs is None else np.vstack([_cache_vecs, v])
+        _cache_resp = _cache_resp + [response_json]
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
@@ -103,17 +117,25 @@ def init_db():
         """)
 
 init_db() # runs once at import; safe to repeat because of IF NOT EXISTS
+_load_cache()
 
 def search_web(query: str) -> tuple[dict, bool]:
     # returns (payload for the model, whether the search cache answered it)
     # check cache, if there's nothin similar in the cache, then run the request
     query_embedding = embed(query)
-    result = check_cache(query_embedding)
-    if result is not None: # cache hit
+    result, sim = check_cache(query_embedding)
+    if result is not None and sim > CACHE_THRESHOLD: # cache hit
         return {
             "query": query,
             "results": result,
         }, True
+    if SEARCH_REPLAY_ONLY: # miss, but never call Brave: replay the nearest cached result (logged as a miss)
+        if result is None:
+            raise RuntimeError("SEARCH_REPLAY_ONLY is on but the search cache is empty")
+        return {
+            "query": query,
+            "results": result,
+        }, False
 
     response = requests.get(
         BRAVE_CONTEXT_URL,

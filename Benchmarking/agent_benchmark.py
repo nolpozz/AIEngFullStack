@@ -52,6 +52,8 @@ from tracing.tracer import RUN_TAG
 import random
 import json
 import math
+import os
+import signal
 
 SEED=411
 
@@ -89,8 +91,19 @@ def build_tasks(queries, n_tasks, seed):
 def run_point(queries, concurrency, n_tasks):
     tasks = build_tasks(queries, n_tasks, SEED)   # new list, local RNG
     t_start = time.time()
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+    pool = ThreadPoolExecutor(max_workers=concurrency)
+    try:
         results = list(pool.map(run_one, tasks))
+    except KeyboardInterrupt:
+        # Ctrl+C only reaches the main thread, and the pool would otherwise run every queued task first.
+        # Drop the queue and exit without waiting on in-flight agents; no results file is written.
+        pool.shutdown(wait=False, cancel_futures=True)
+        print("\ninterrupted: point discarded", flush=True)
+        # die *by* SIGINT (not a plain exit code) so a surrounding shell `for` loop stops too
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGINT)
+        os._exit(130)  # fallback if the signal is somehow not fatal
+    pool.shutdown()
     t_end = time.time()
     return {"concurrency": concurrency, "n_tasks": n_tasks, "t_start": t_start, "t_end": t_end, "results": results}
 

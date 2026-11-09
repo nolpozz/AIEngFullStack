@@ -13,7 +13,11 @@ Usage, from the repo root:
     python -m Benchmarking.analyze --latest 2 --trim 30 --csv compare.csv
 
 --trim S drops S seconds from both ends of each run (warmup / tail) for the server metrics
-and for which tasks count. It is the steady-state window knob.
+and for which tasks count. It is the steady-state window knob. A task counts when it *finishes*
+inside the window (wherever it started), so tasks / min is completions per window time. Requiring
+it to also start inside would drop every task that straddles an edge while keeping the full
+window as the denominator: tasks / min reads low, worst when tasks are long next to the window,
+and p90 reads short, since long tasks are the ones that straddle.
 
 Sections, and what moves them:
     Settings          what differs between the runs (marked *)
@@ -136,15 +140,15 @@ def compute(run, trim):
     ]
     settings = [(k, "-" if v is None else str(v)) for k, v in settings]
 
-    # --- harness tasks inside the window ---
+    # --- harness tasks that finish inside the window ---
     all_tasks = res["results"]
-    tasks = [r for r in all_tasks if r["start_ts"] >= t0 and r["start_ts"] + r["duration"] <= t1]
+    tasks = [r for r in all_tasks if t0 <= r["start_ts"] + r["duration"] <= t1]
     if len(tasks) < len(all_tasks):
         warn.append(f"window excludes {len(all_tasks) - len(tasks)} of {len(all_tasks)} tasks")
     ok = [r["duration"] for r in tasks if r["status"] == "ok"]
     bad = Counter(r["status"] for r in tasks if r["status"] != "ok")
 
-    # --- trace runs inside the window (complete runs only) ---
+    # --- trace runs that finish inside the window (complete runs only) ---
     by_run = defaultdict(list)
     for e in events:
         by_run[e["run_id"]].append(e)
@@ -152,7 +156,7 @@ def compute(run, trim):
     for evs in by_run.values():
         s = next((e for e in evs if e["type"] == "run_start"), None)
         en = next((e for e in evs if e["type"] == "run_end"), None)
-        if s and en and s["timestamp"] >= t0 and en["timestamp"] <= t1:
+        if s and en and t0 <= en["timestamp"] <= t1:
             runs.append(evs)
     if events and not runs:
         warn.append("no complete trace runs inside the window")

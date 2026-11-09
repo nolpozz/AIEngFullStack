@@ -40,7 +40,8 @@
 - [ ] Measurement window in the harness: discarded warmup pass, n_tasks scaled with concurrency. (analyze.py already trims by time.)
 - [ ] Check the search-cache hit rate from the `cache_hit` field after the next run.
 - [ ] Move the harness and the scraper to Modal: image, secrets, search cache, results volume, one call per sweep point.
-- [ ] Delete benchmarking.py (mock runs; replaced by agent_benchmark.py).
+- [x] Delete benchmarking.py (mock runs; replaced by agent_benchmark.py). Archived in `archive/`.
+- [x] Curve script `Benchmarking/curve.py`: the latest sweep's tasks/min, p90 and KV against A, with the knee from the F rule.
 
 ## E. Baseline and ranges
 
@@ -50,7 +51,7 @@
 
 ## F. Define "best"
 
-Two objectives, both read from the same sweep. Each one picks its own best config and gets its own kernel in H.
+Two objectives, both read from the same sweep. Each one picks its own best config. Only T gets a kernel: the L kernel was dropped after profiling (see L below and `phase3_kernels/README.md`).
 
 - [x] **Throughput (T):** maximize completed tasks per hour over all configs (S, B) and agent counts (A).
   - Constraints: 0 errors; p90 task time ≤ 3× the concurrency-1 p90.
@@ -59,6 +60,7 @@ Two objectives, both read from the same sweep. Each one picks its own best confi
 - [x] **Latency (L):** minimize p90 task time at A = 8.
   - Constraint: 0 errors.
   - Expected operating point: small batch. Expected kernel target: weight matrix-vector products and the TP all-reduce.
+  - **No L kernel (decided Nov 9).** Profile at A=8: weight GEMMs are 70% of a decode step and already at ~89% of HBM peak; the best kernel candidates (fused all-reduce + RMSNorm ~0.4-0.5 ms, small-batch attention ~1 ms of a 16.8 ms step) are 2-6%, while p90 at A=8 varies ~±20% between identical runs, so the objective couldn't show them. The lever for L is fewer weight bytes: Phase 4 quantization.
 
 ## G. Sweep
 
@@ -66,17 +68,36 @@ Knobs: S = `max_num_seqs`, B = `max_num_batched_tokens`. Everything else is fixe
 
 - [ ] Before sweeping: harness on Modal, discarded warmup, n_tasks rule below, search cache replay so misses don't hit Brave live.
 - [ ] Before sweeping: check that the CUDA graph max capture size is ≥ 72 (the largest S) on the vLLM image.
-- [ ] **Low-load points** (latency objective; S doesn't matter here because demand < every S): A = 1, 4, 8 for each B in {2048, 4096, 8192, 16384}, with S = 36. 4 configs × 3 points.
-- [ ] **Knee points** (throughput objective): A = 16, 24, 32, 48, 64, 96 for every (S, B) in {18, 36, 72} × {2048, 4096, 8192, 16384}. 12 configs × 6 points.
-- [ ] Pick the T winner and the L winner from the objectives in F.
-- [ ] **Full curve** for each winner, to confirm it: A = 1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128.
+- [x] **Low-load points** (latency objective; S doesn't matter here because demand < every S): A = 1, 4, 8 for each B in {2048, 4096, 8192, 16384}, with S = 36. 4 configs × 3 points.
+- [x] **Knee points** (ran with A = 16, 24, 32, 40, 48, 64; 96 dropped) (throughput objective): A = 16, 24, 32, 48, 64, 96 for every (S, B) in {18, 36, 72} × {2048, 4096, 8192, 16384}. 12 configs × 6 points.
+- [x] Pick the T winner and the L winner from the objectives in F. **Frozen: S=36, B=4096 for both; T at A=32, L at A=8.**
+  - T: S=36, B=4096 (48.4 tasks/min at A=32, best plateau 42.4, 0 preemptions there). S=72 ties on tasks/min but admits past N_kv and churns (A=40: 13 preemptions vs 0, lower prefix hit, slower decode), so it's out. S=18 is capped below N_kv.
+  - T confirmation curve (Nov 3, H100!): flat at ~38-40 tasks/min from A=32 to 64; knee by the F rule A=32 (39.7, mean of 36.0 and 43.3), best A=36 (40.4). The grid's 48.4 at A=32 was a high draw: identical runs differ by ~20%, so read the plateau, not single points. Operating point and target_concurrency: A=32.
+  - L: S=36, B=4096 at A=8. At A=8 the server metrics match for every B (ITL ~21 ms, nothing waiting); 36/4096's own A=8 p90s span 41-64 s across three runs, and 36/16384's single 36.5 s sits at the edge of that noise. Same config as T, so one server profiled at two operating points.
+- [x] **Full curve** for each winner, to confirm it (done for 36/4096 with A=1-64 plus 36, 44 and repeats of 32 and 8): A = 1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128.
 - n_tasks per point: `45 × ceil(4A / 45)`, minimum 90 (multiples of 45 keep the question mix balanced). Trim the warmup and the end drain with `--trim`.
 - Redeploy the server for every config change. Total: ~84 grid points + 2 confirmation curves, 12 redeploys.
 
 ## H. Before kernels
 
-- [ ] Note the throughput winner's saturation point: it becomes `target_concurrency` if this ever scales past one container. Re-check it after the kernel, since a faster kernel moves the knee. (See the comment above `@app.server` in `phase1_serving/modalForvLLM.py`.)
-- [ ] Freeze the T and L configs. Profile each at its operating point (torch profiler or nsys) to see whether prefill attention, decode attention, the MLP/projection matmuls or the all-reduce dominate. Let that decide each kernel.
+- [x] Note the throughput winner's saturation point (A=32): it becomes `target_concurrency` if this ever scales past one container. Re-check it after the kernel, since a faster kernel moves the knee. (See the comment above `@app.server` in `phase1_serving/modalForvLLM.py`.)
+- [x] Sweep data rotated to `tracing/sweep_2026-11-03/` (results, traces, the metrics file and the curve PNG). It is the pre-kernel baseline: `python -m Benchmarking.analyze --dir tracing/sweep_2026-11-03 ...` / `python -m Benchmarking.curve --dir tracing/sweep_2026-11-03`.
+- [x] Profiler support: `PROFILER = "torch"` in server_config.py turns on `--profiler-config` (traces to the `vllm-profiles` Modal volume); `python -m Benchmarking.capture_profile` starts and stops a capture while the harness runs.
+- [x] Freeze the T and L configs. Profile each at its operating point (torch profiler or nsys) to see whether prefill attention, decode attention, the MLP/projection matmuls or the all-reduce dominate. Let that decide each kernel.
+  - Done Nov 3 (torch profiler, 20 s each, traces in `profiles/`). A=32: decode attention 45% of a decode-only step (FA3 at ~79% of HBM peak), GEMMs 46% (~89%), prefill-carrying steps 49% of GPU time. A=8: GEMMs 70%, attention 20%. Decision: one kernel, paged GQA decode attention for T (`phase3_kernels/decode_attention.py`); no L kernel.
+
+## I. Kernel T: paged GQA decode attention (`phase3_kernels/decode_attention.py`)
+
+Goal: FA3 decode attention at A=32 takes 176 µs/call (~79% of 3.35 TB/s); target ≤ 155 µs (~90%), ~1.4 ms off each 25.5 ms decode-only step.
+The agent benchmark can't show a ~5% gain (±20% run to run), so judge it from the microbenchmark, the profile and engine metrics.
+
+- [ ] Reference implementation + random paged inputs (uneven seq_lens, shuffled blocks).
+- [ ] Split kernel + combine kernel; `test` passes against the reference at small, A32 and A8 shapes.
+- [ ] `bench` on Modal (`H100!`): µs/call and TB/s vs FA3. A32 ≤ 155 µs; A8 no slower than 49 µs. Tune NUM_SPLITS and BLOCK_N.
+- [ ] Integrate into vLLM (attention backend or patched decode call), CUDA-graph safe.
+- [ ] Profile A=32 again: decode-only step time vs 25.5 ms, attention row vs 11.5 ms (`python -m Benchmarking.kernel_breakdown`).
+- [ ] `PROFILER = None`, run A=32 a few times: ITL and generation throughput vs `tracing/sweep_2026-11-03`.
+- [ ] Sanity check tasks/min and p90 against the baseline curve; re-check the knee and `target_concurrency`.
 
 ## Settings
 
